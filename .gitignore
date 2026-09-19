@@ -1,0 +1,8 @@
+cache/
+cache2/
+.venv/
+.venv2/
+smoke_test.py
+__pycache__/
+ha22.pdf
+HANDOFF.md

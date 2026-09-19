@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>PDF Bilingue — {{ start_page }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+  :root { --bg:#202124; --panel:#171718; --accent:#8ab4f8; --text:#e8eaed; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font: 14px system-ui, sans-serif;
+         height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  header { display:flex; align-items:center; gap:12px; padding:8px 14px;
+           background:var(--panel); border-bottom:1px solid #333; }
+  header h1 { font-size:15px; font-weight:600; margin-right:8px; }
+  header .pdfname { color:#9aa0a6; font-size:13px; }
+  .nav { display:flex; align-items:center; gap:6px; margin-left:auto; }
+  button { background:#303134; color:var(--text); border:1px solid #444;
+           border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button:hover { background:#3c4043; }
+  button:disabled { opacity:.45; cursor:default; }
+  #pageInput { width:64px; padding:5px 8px; background:#202124; color:var(--text);
+               border:1px solid #444; border-radius:6px; text-align:center; }
+  #status { font-size:12px; color:#9aa0a6; min-width:110px; text-align:center; }
+  #status.busy { color:#fdd663; }
+  #status.ok { color:#81c995; }
+  #status.err { color:#f28b82; }
+  .zoom { display:flex; gap:4px; align-items:center; }
+  #zoomPct { width:46px; text-align:center; font-size:13px; }
+
+  main { flex:1; display:flex; overflow:hidden; }
+  .pane { width:50%; height:100%; overflow:auto; position:relative; background:#111; }
+  .pane.left { border-right:1px solid #333; }
+  .pane-inner { margin:16px auto; width:fit-content; }
+  .pane img { display:block; background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.55); }
+  .pane-label { position:sticky; top:0; z-index:5; padding:6px 14px;
+                background:rgba(23,23,24,.92); border-bottom:1px solid #333;
+                font-size:12px; font-weight:600; letter-spacing:.4px; color:#9aa0a6;
+                text-transform:uppercase; }
+  .pane.left .pane-label { color:#8ab4f8; }
+  .pane.right .pane-label { color:#c58af9; }
+
+  #loading { position:absolute; inset:0; display:none; place-items:center;
+             background:rgba(17,17,17,.72); z-index:10; }
+  #loading .box { text-align:center; }
+  .spinner { width:38px; height:38px; border:3px solid #444; border-top-color:#c58af9;
+             border-radius:50%; margin:0 auto 14px; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #loading small { color:#9aa0a6; }
+  #error { display:none; margin:30px auto; max-width:420px; padding:16px;
+           background:#3b1e1e; border:1px solid #f28b82; border-radius:10px;
+           color:#f6aea9; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PDF Bilingue</h1>
+  <span class="pdfname">ha22.pdf</span>
+  <div class="nav">
+    <button id="prev">‹</button>
+    <input id="pageInput" type="number" min="1" max="{{ page_count }}" value="{{ start_page }}">
+    <span id="pgCount">/ {{ page_count }}</span>
+    <button id="next">›</button>
+    <div class="zoom">
+      <button id="zoomOut">−</button>
+      <span id="zoomPct">100%</span>
+      <button id="zoomIn">+</button>
+    </div>
+    <span id="status">—</span>
+  </div>
+</header>
+<main>
+  <div class="pane left" id="paneL">
+    <div class="pane-label">Originale</div>
+    <div class="pane-inner" id="innerL"><img id="imgL" alt="originale"></div>
+  </div>
+  <div class="pane right" id="paneR">
+    <div class="pane-label">Tradotto</div>
+    <div class="pane-inner" id="innerR">
+      <img id="imgR" alt="tradotto">
+      <div id="loading"><div class="box">
+        <div class="spinner"></div>
+        Traduzione in corso…<br><small>modello Muse Spark 1.3 via OpenRouter (~10-60 s)</small>
+      </div></div>
+      <div id="error"></div>
+    </div>
+  </div>
+</main>
+<script>
+const MAXP = {{ page_count }};
+let page = {{ start_page }}, zoom = 100, pending = null, pollTimer = null, imgToken = 0;
+
+const $ = id => document.getElementById(id);
+const paneL = $('paneL'), paneR = $('paneR');
+$('imgL').style.display = 'none';
+$('imgR').style.display = 'none';
+
+function loadOriginal() {
+  const t = ++imgToken;
+  const im = $('imgL');
+  im.onload = () => { if (t === imgToken) im.style.display = 'block'; };
+  im.onerror = () => { if (t === imgToken) im.style.display = 'none'; };
+  im.src = `/api/page/${page}/original.png?dpi=${dpi()}&v=${Date.now()}`;
+}
+function loadTranslated() {
+  const t = ++imgToken;
+  const im = $('imgR');
+  im.onload = () => { if (t === imgToken) im.style.display = 'block'; };
+  im.onerror = () => { if (t === imgToken) im.style.display = 'none'; };
+  im.src = `/api/page/${page}/translated.png?dpi=${dpi()}&v=${Date.now()}`;
+}
+
+function dpi() { return Math.round(96 * zoom / 100); }
+
+function enter(page) {
+  if (page < 1 || page > MAXP) return;
+  page = page; history.replaceState(null, '', `?page=${page}`);
+  $('pageInput').value = page;
+  $('status').textContent = '—'; $('status').className = '';
+  $('error').style.display = 'none';
+  loadOriginal();
+  startTranslateFlow();
+}
+
+function startTranslateFlow() {
+  if (pollTimer) clearInterval(pollTimer);
+  $('loading').style.display = 'grid';
+  fetch(`/api/translate/${page}`, {method:'POST'})
+    .then(r => r.json())
+    .then(() => pollStatus())
+    .catch(() => showStatus('err', 'errore di rete'));
+}
+
+function pollStatus() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const r = await fetch(`/api/status/${page}`);
+    const d = await r.json();
+    const s = d.status;
+    if (d.cached && (!s || s === 'done')) {
+      clearInterval(pollTimer); pollTimer = null;
+      $('loading').style.display = 'none';
+      loadTranslated();
+      showStatus('ok', 'in cache');
+    } else if (s === 'running') {
+      showStatus('busy', 'Traduzione…');
+    } else if (s && s.startsWith('error')) {
+      clearInterval(pollTimer); pollTimer = null;
+      $('loading').style.display = 'none';
+      errBox(s.slice(6) || 'errore di traduzione');
+    } else {
+      showStatus('busy', 'Preparazione…');
+    }
+  }, 1200);
+}
+
+function showStatus(cls, txt) { const el = $('status'); el.textContent = txt; el.className = cls; }
+function errBox(msg) {
+  const e = $('error'); e.textContent = '⚠ ' + msg; e.style.display = 'block';
+  showStatus('err', 'errore');
+}
+
+// scroll sincronizzato L<->R
+paneL.addEventListener('scroll', () => {
+  paneR.scrollTop = paneL.scrollTop / (paneL.scrollHeight - paneL.clientHeight || 1)
+                     * (paneR.scrollHeight - paneR.clientHeight || 1);
+  paneR.scrollLeft = paneL.scrollLeft;
+});
+paneR.addEventListener('scroll', () => {
+  paneL.scrollTop = paneR.scrollTop / (paneR.scrollHeight - paneR.clientHeight || 1)
+                     * (paneL.scrollHeight - paneL.clientHeight || 1);
+  paneL.scrollLeft = paneR.scrollLeft;
+});
+
+function changeZoom(delta) {
+  zoom = Math.max(25, Math.min(300, zoom + delta));
+  $('zoomPct').textContent = zoom + '%';
+  loadOriginal();
+  startTranslateFlowSoft();
+}
+function startTranslateFlowSoft() { // solo reload immagine se in cache
+  fetch(`/api/translate/${page}`, {method:'POST'}).then(pollStatus);
+}
+
+$('prev').onclick = () => enter(page - 1);
+$('next').onclick = () => enter(page + 1);
+$('pageInput').onchange = () => enter(parseInt($('pageInput').value, 10) || 1);
+$('zoomIn').onclick = () => changeZoom(25);
+$('zoomOut').onclick = () => changeZoom(-25);
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'PageDown') enter(page + 1);
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') enter(page - 1);
+  if (e.key === '+') changeZoom(25);
+  if (e.key === '-') changeZoom(-25);
+});
+
+enter({{ start_page }});
+</script>
+</body>
+</html>
